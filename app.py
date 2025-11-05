@@ -7,6 +7,7 @@ import os
 import httpx
 from datetime import datetime
 import random
+from fastapi.middleware.cors import CORSMiddleware
 
 # 📦 Cargar variables del entorno
 load_dotenv()
@@ -17,6 +18,14 @@ BACKEND_URL = os.getenv("BACKEND_URL", "https://previmedbackend-q73n.onrender.co
 cliente_openai = OpenAI(api_key=CLAVE_OPENAI)
 app = FastAPI(title="Asistente IA Prevemed")
 
+#cors
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # ⚠️ Puedes cambiar "*" por tu dominio luego
+    allow_credentials=True,
+    allow_methods=["*"],  # permite OPTIONS, GET, POST, etc.
+    allow_headers=["*"],  # permite encabezados como Content-Type
+)
 # 🧠 Memoria conversacional
 conversaciones = {}
 
