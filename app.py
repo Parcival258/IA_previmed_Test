@@ -26,9 +26,15 @@ cliente_openai = OpenAI(api_key=CLAVE_OPENAI)
 # ===============================
 # 🔓 Configurar CORS dinámico
 # ===============================
+
+origins = [
+    "http://localhost:5173",
+    "https://previmed.onrender.com",   # si luego lo despliegas
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[o.strip() for o in ALLOWED_ORIGINS if o.strip()],
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
