@@ -26,19 +26,25 @@ cliente_openai = OpenAI(api_key=CLAVE_OPENAI)
 # ===============================
 # 🔓 Configurar CORS dinámico
 # ===============================
+from fastapi.middleware.cors import CORSMiddleware
 
-origins = [
-    "http://localhost:5173",
-    "https://previmed.onrender.com",   # si luego lo despliegas
-]
+# 🧩 Leer dominios permitidos desde .env
+allowed_origins_env = os.getenv("ALLOWED_ORIGINS", "")
+allowed_origins = [origin.strip() for origin in allowed_origins_env.split(",") if origin.strip()]
+
+# 🧩 Lista de respaldo (si Render no carga el .env)
+from fastapi.middleware.cors import CORSMiddleware
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=["http://localhost:5173"],  # solo el front local
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+print("🧩 CORS activo solo para: http://localhost:5173")
+
 
 # 🧠 Memoria conversacional
 conversaciones = {}
