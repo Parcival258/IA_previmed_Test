@@ -49,6 +49,7 @@ conversaciones = {}
 class MensajeEntrada(BaseModel):
     texto: str
     documento: str | None = None
+    historial: list[dict] | None = None
 
 
 # ===============================
@@ -148,7 +149,7 @@ async def detectar_intencion(texto: str):
 
 
 # ===============================
-# 💬 Endpoint principal del chat
+# 💬 ENDPOINT PRINCIPAL DE CHAT
 # ===============================
 @app.post("/chat")
 async def responder(mensaje: MensajeEntrada):
@@ -156,45 +157,46 @@ async def responder(mensaje: MensajeEntrada):
     doc = mensaje.documento
     contexto = conversaciones.get(doc or "default", {})
 
+    # 🧩 reconstruir historial si viene desde el frontend
+    if mensaje.historial:
+        contexto["historial"] = mensaje.historial
+
     if not texto:
         raise HTTPException(status_code=400, detail="El campo 'texto' no puede estar vacío.")
 
-    # 🧠 Analizar intención
+    # 🧠 Analizar intención con GPT
     intencion = await detectar_intencion(texto)
     print(f"🧭 Intención detectada: {intencion}")
+
+    # 🔍 Refuerzo manual por palabras clave
+    if any(p in texto.lower() for p in ["visita", "cita", "médico", "doctor", "agendar", "consulta", "urgencia"]):
+        intencion = "visita"
+    elif any(p in texto.lower() for p in ["plan", "afiliación", "membresía", "convenio"]):
+        intencion = "informacion"
+
+    print(f"🎯 Intención final ajustada: {intencion}")
 
     # 🚪 Cancelar conversación
     if intencion == "cancelar":
         conversaciones.pop(doc or "default", None)
-        return {"ok": True, "accion": "cancelar", "respuesta": "Perfecto. He cancelado la solicitud."}
+        return {
+            "ok": True,
+            "accion": "cancelar",
+            "respuesta": "Perfecto. He cancelado la solicitud. ¿Deseas que te ayude con otra cosa?"
+        }
 
     # 🩺 Información general
-    if intencion == "informacion" and not any(p in texto.lower() for p in ["visita", "médico", "doctor"]):
+    if intencion == "informacion":
         completion = cliente_openai.chat.completions.create(
             model="gpt-4.1-mini",
             messages=[
-                {"role": "system", "content": f"Eres el asistente de Previmed:\n\n{contexto_prevemed}"},
+                {"role": "system", "content": f"Eres el asistente institucional de Previmed:\n\n{contexto_prevemed}"},
                 {"role": "user", "content": texto},
             ],
         )
         return {"ok": True, "accion": "informacion", "respuesta": completion.choices[0].message.content}
 
-    # 🚀 Si el usuario menciona visita o médico, tratamos como solicitud de visita
-    if any(p in texto.lower() for p in ["visita", "médico", "doctor", "cita"]):
-        intencion = "visita"
-
-    # 💬 Si no es visita ni información, responder naturalmente
-    if intencion == "otro":
-        completion = cliente_openai.chat.completions.create(
-            model="gpt-4.1-mini",
-            messages=[
-                {"role": "system", "content": f"Eres un asistente empático de Previmed:\n\n{contexto_prevemed}"},
-                {"role": "user", "content": texto},
-            ],
-        )
-        return {"ok": True, "accion": "otro", "respuesta": completion.choices[0].message.content}
-
-    # 🏥 Flujo de solicitud de visita
+    # 🏥 Flujo completo de visita
     if intencion == "visita":
         # 1️⃣ Solicitar documento si no está presente
         if not doc:
@@ -207,29 +209,34 @@ async def responder(mensaje: MensajeEntrada):
         # 2️⃣ Validar membresía
         if "membresia_verificada" not in contexto:
             data = await verificar_membresia_activa(doc)
+            print(f"🧾 Resultado membresía: {data}")
             if not data.get("ok"):
                 return {
                     "ok": False,
                     "accion": "sin_membresia",
-                    "respuesta": "No encuentro una membresía activa con ese documento."
+                    "respuesta": "No encuentro una membresía activa con ese documento. Si lo deseas puedo ayudarte a crear o renovar una membresía."
                 }
 
             contexto["membresia_verificada"] = True
             contexto["paciente_id"] = data["paciente"]["id_paciente"]
             conversaciones[doc] = contexto
-            return {"ok": True, "accion": "pedir_motivo", "respuesta": "Excelente. ¿Cuál es el motivo de tu visita?"}
+            return {
+                "ok": True,
+                "accion": "pedir_motivo",
+                "respuesta": "Excelente. Ya confirmé tu membresía activa. ¿Podrías contarme brevemente el motivo de tu visita?"
+            }
 
         # 3️⃣ Pedir motivo
         if "motivo" not in contexto:
             contexto["motivo"] = texto
             conversaciones[doc] = contexto
-            return {"ok": True, "accion": "pedir_direccion", "respuesta": "¿En qué dirección deseas recibir la visita?"}
+            return {"ok": True, "accion": "pedir_direccion", "respuesta": "Entendido. ¿En qué dirección deseas recibir la visita?"}
 
         # 4️⃣ Pedir dirección
         if "direccion" not in contexto:
             contexto["direccion"] = texto
             conversaciones[doc] = contexto
-            return {"ok": True, "accion": "pedir_telefono", "respuesta": "Por favor, indícame un número de contacto."}
+            return {"ok": True, "accion": "pedir_telefono", "respuesta": "Perfecto. Ahora necesito un número de contacto, por favor."}
 
         # 5️⃣ Pedir teléfono y mostrar médicos
         if "telefono" not in contexto:
@@ -239,14 +246,14 @@ async def responder(mensaje: MensajeEntrada):
             medicos = await get_medicos_disponibles()
             if not medicos:
                 return {"ok": False, "accion": "sin_medicos",
-                        "respuesta": "No hay médicos disponibles ahora. ¿Deseas que te notifique cuando haya uno libre?"}
+                        "respuesta": "Lamentablemente no hay médicos disponibles en este momento. ¿Deseas que te notifique cuando haya uno libre?"}
 
             contexto["medicos_disponibles"] = medicos
             conversaciones[doc] = contexto
 
             nombres = ", ".join([f"{m['usuario']['nombre']} {m['usuario']['apellido']}" for m in medicos])
             return {"ok": True, "accion": "elegir_medico",
-                    "respuesta": f"Estos son los médicos disponibles: {nombres}. ¿Con cuál deseas agendar?"}
+                    "respuesta": f"Tengo disponibles a los siguientes médicos: {nombres}. ¿Con cuál deseas agendar la visita?"}
 
         # 6️⃣ Elegir médico
         if "medico_id" not in contexto:
@@ -254,7 +261,7 @@ async def responder(mensaje: MensajeEntrada):
             elegido = next((m for m in medicos if m["usuario"]["nombre"].lower() in texto.lower()), None)
             if not elegido:
                 return {"ok": False, "accion": "repetir_medico",
-                        "respuesta": "No logré identificar el médico. Dime solo el nombre, por ejemplo: 'Samanta'."}
+                        "respuesta": "No logré identificar el médico que mencionas. Por favor dime solo el nombre, por ejemplo: Samanta."}
 
             contexto["medico_id"] = elegido["id_medico"]
             conversaciones[doc] = contexto
@@ -262,14 +269,14 @@ async def responder(mensaje: MensajeEntrada):
             barrios = await get_barrios_activos()
             if not barrios:
                 return {"ok": False, "accion": "sin_barrios",
-                        "respuesta": "No hay barrios activos. Contacta soporte para registrar tu dirección."}
+                        "respuesta": "Parece que no hay barrios activos disponibles. Por favor contacta soporte para registrar la dirección."}
 
             contexto["barrios_activos"] = barrios
             conversaciones[doc] = contexto
 
             nombres_barrios = ", ".join([b["nombreBarrio"] for b in barrios])
             return {"ok": True, "accion": "elegir_barrio",
-                    "respuesta": f"¿En qué barrio te encuentras? Barrios disponibles: {nombres_barrios}."}
+                    "respuesta": f"Ahora dime en qué barrio te encuentras. Barrios disponibles: {nombres_barrios}."}
 
         # 7️⃣ Elegir barrio
         if "barrio_id" not in contexto:
@@ -277,12 +284,12 @@ async def responder(mensaje: MensajeEntrada):
             elegido = next((b for b in barrios if b["nombreBarrio"].lower() in texto.lower()), None)
             if not elegido:
                 return {"ok": False, "accion": "repetir_barrio",
-                        "respuesta": "No logré identificar ese barrio. Intenta escribir solo el nombre."}
+                        "respuesta": "No logré identificar ese barrio. Intenta escribir solo el nombre, por ejemplo: Modelo."}
 
             contexto["barrio_id"] = elegido["idBarrio"]
             conversaciones[doc] = contexto
             return {"ok": True, "accion": "confirmar",
-                    "respuesta": f"Confirmo: visita por '{contexto['motivo']}' en '{contexto['direccion']}', barrio {elegido['nombreBarrio']}. ¿Confirmas?"}
+                    "respuesta": f"Perfecto. Agendaremos una visita por '{contexto['motivo']}' en '{contexto['direccion']}', barrio {elegido['nombreBarrio']}. ¿Confirmas?"}
 
         # 8️⃣ Confirmar y crear la visita
         if "sí" in texto.lower() or "si" in texto.lower():
@@ -296,10 +303,19 @@ async def responder(mensaje: MensajeEntrada):
             )
             conversaciones.pop(doc, None)
             return {"ok": True, "accion": "visita_creada",
-                    "respuesta": "✅ ¡Listo! Tu visita fue creada exitosamente."}
+                    "respuesta": "Tu visita fue creada exitosamente. En unos minutos recibirás la confirmación en tu correo."}
 
         return {"ok": True, "accion": "esperando_confirmacion", "respuesta": "¿Deseas que cree la visita con esos datos?"}
 
+    # 🧩 Fallback general
+    completion = cliente_openai.chat.completions.create(
+        model="gpt-4.1-mini",
+        messages=[
+            {"role": "system", "content": f"Eres el asistente de Previmed. Usa este contexto institucional:\n\n{contexto_prevemed}"},
+            {"role": "user", "content": texto},
+        ],
+    )
+    return {"ok": True, "accion": "otro", "respuesta": completion.choices[0].message.content}
 
 # ===============================
 # 🌐 Endpoint raíz
