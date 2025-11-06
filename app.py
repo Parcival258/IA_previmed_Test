@@ -61,19 +61,17 @@ async def verificar_membresia_activa(documento: str):
             resp = await cliente.get(url)
             resp.raise_for_status()
             return resp.json()
-    except Exception as e:
-        print("❌ Error verificando membresía:", e)
-        return {"ok": False, "mensaje": str(e)}
+    except Exception:
+        return {"ok": False, "mensaje": "No se pudo verificar la membresía en este momento."}
 
 async def get_medicos():
     try:
         async with httpx.AsyncClient(timeout=10) as cliente:
-            resp = await cliente.get(f"{BACKEND_URL}/medicos")
+            resp = await cliente.get(f"{BACKEND_URL}/medicos/")
             resp.raise_for_status()
             data = resp.json()
             return [m for m in data.get("data", []) if m.get("estado") and m.get("disponibilidad")]
-    except Exception as e:
-        print("❌ Error obteniendo médicos:", e)
+    except Exception:
         return []
 
 async def get_barrios():
@@ -83,8 +81,7 @@ async def get_barrios():
             resp.raise_for_status()
             data = resp.json()
             return [b for b in data.get("msj", []) if b.get("estado")]
-    except Exception as e:
-        print("❌ Error obteniendo barrios:", e)
+    except Exception:
         return []
 
 async def crear_visita(paciente_id, medico_id, descripcion, direccion, telefono, barrio_id):
@@ -100,13 +97,11 @@ async def crear_visita(paciente_id, medico_id, descripcion, direccion, telefono,
                 "medico_id": medico_id,
                 "barrio_id": barrio_id,
             }
-            print("📤 Enviando creación de visita:", payload)
             resp = await cliente.post(f"{BACKEND_URL}/visitas", json=payload)
             resp.raise_for_status()
             return resp.json()
-    except Exception as e:
-        print("❌ Error creando visita:", e)
-        return {"ok": False, "mensaje": str(e)}
+    except Exception:
+        return {"ok": False, "mensaje": "No se pudo crear la visita en este momento."}
 
 
 # ===============================
@@ -114,7 +109,6 @@ async def crear_visita(paciente_id, medico_id, descripcion, direccion, telefono,
 # ===============================
 @app.post("/chat")
 async def chat(mensaje: MensajeEntrada):
-    print(f"\n📩 Texto: {mensaje.texto} | Documento: {mensaje.documento}")
     texto = mensaje.texto.lower().strip()
     doc = mensaje.documento or "default"
 
@@ -122,43 +116,36 @@ async def chat(mensaje: MensajeEntrada):
         raise HTTPException(400, "Texto vacío")
 
     contexto = conversaciones.get(doc, {})
-
-    # Detectar intención
     palabras_visita = ["visita", "cita", "médico", "medico", "doctor"]
-    if any(p in texto for p in palabras_visita):
-        intencion = "visita"
-    else:
-        intencion = "info"
 
-    print("🧭 Intención:", intencion)
+    intencion = "visita" if any(p in texto for p in palabras_visita) else "info"
 
     # ========= FLUJO VISITA =========
     if intencion == "visita":
         # Documento
         if not mensaje.documento:
-            return {"ok": False, "accion": "pedir_documento", "respuesta": "¿Podrías darme tu número de cédula para verificar tu membresía?"}
+            return {"ok": False, "accion": "pedir_documento", "respuesta": "¿Podrías darme tu número de cédula para verificar tu membresía?", "detalle": {}}
 
         # Membresía
         if "membresia" not in contexto:
             data = await verificar_membresia_activa(mensaje.documento)
-            print("📄 Respuesta membresía:", data)
             if not data.get("ok"):
-                return {"ok": False, "accion": "sin_membresia", "respuesta": "No se encontró membresía activa. ¿Deseas renovarla?"}
+                return {"ok": False, "accion": "sin_membresia", "respuesta": "No se encontró membresía activa. ¿Deseas renovarla?", "detalle": {}}
             contexto["membresia"] = data
             conversaciones[doc] = contexto
-            return {"ok": True, "accion": "pedir_motivo", "respuesta": "Perfecto, tu membresía está activa. ¿Cuál es el motivo de la visita?"}
+            return {"ok": True, "accion": "pedir_motivo", "respuesta": "Perfecto, tu membresía está activa. ¿Cuál es el motivo de la visita?", "detalle": {}}
 
         # Motivo
         if "motivo" not in contexto:
             contexto["motivo"] = texto
             conversaciones[doc] = contexto
-            return {"ok": True, "accion": "pedir_direccion", "respuesta": "¿En qué dirección deseas recibir la visita?"}
+            return {"ok": True, "accion": "pedir_direccion", "respuesta": "¿En qué dirección deseas recibir la visita?", "detalle": {}}
 
         # Dirección
         if "direccion" not in contexto:
             contexto["direccion"] = texto
             conversaciones[doc] = contexto
-            return {"ok": True, "accion": "pedir_telefono", "respuesta": "Por favor indícame un número de contacto."}
+            return {"ok": True, "accion": "pedir_telefono", "respuesta": "Por favor indícame un número de contacto.", "detalle": {}}
 
         # Teléfono
         if "telefono" not in contexto:
@@ -166,32 +153,32 @@ async def chat(mensaje: MensajeEntrada):
             conversaciones[doc] = contexto
             medicos = await get_medicos()
             if not medicos:
-                return {"ok": False, "accion": "sin_medicos", "respuesta": "No hay médicos disponibles en este momento 😔."}
+                return {"ok": False, "accion": "sin_medicos", "respuesta": "No hay médicos disponibles en este momento 😔.", "detalle": {}}
             contexto["medicos"] = medicos
             conversaciones[doc] = contexto
-            lista = ", ".join([f"{m['usuario']['nombre']} {m['usuario']['apellido']}" for m in medicos])
-            return {"ok": True, "accion": "elegir_medico", "respuesta": f"Los médicos disponibles son: {lista}. ¿Con cuál deseas agendar?"}
+            lista = [f"{m['usuario']['nombre']} {m['usuario']['apellido']}" for m in medicos]
+            return {"ok": True, "accion": "elegir_medico", "respuesta": "Selecciona un médico disponible:", "detalle": {"medicos": lista}}
 
         # Médico
         if "medico" not in contexto:
             elegido = next((m for m in contexto["medicos"] if m["usuario"]["nombre"].lower() in texto), None)
             if not elegido:
-                return {"ok": False, "accion": "repetir_medico", "respuesta": "No logré identificar el médico. Dime solo su nombre."}
+                return {"ok": False, "accion": "repetir_medico", "respuesta": "No logré identificar el médico. Dime solo su nombre.", "detalle": {}}
             contexto["medico"] = elegido
             barrios = await get_barrios()
             contexto["barrios"] = barrios
             conversaciones[doc] = contexto
-            lista = ", ".join([b["nombreBarrio"] for b in barrios])
-            return {"ok": True, "accion": "elegir_barrio", "respuesta": f"¿En qué barrio estás? Barrios disponibles: {lista}."}
+            lista = [b["nombreBarrio"] for b in barrios]
+            return {"ok": True, "accion": "elegir_barrio", "respuesta": "Selecciona tu barrio:", "detalle": {"barrios": lista}}
 
         # Barrio
         if "barrio" not in contexto:
             elegido = next((b for b in contexto["barrios"] if b["nombreBarrio"].lower() in texto), None)
             if not elegido:
-                return {"ok": False, "accion": "repetir_barrio", "respuesta": "No logré identificar el barrio. Dime solo el nombre."}
+                return {"ok": False, "accion": "repetir_barrio", "respuesta": "No logré identificar el barrio. Dime solo el nombre.", "detalle": {}}
             contexto["barrio"] = elegido
             conversaciones[doc] = contexto
-            return {"ok": True, "accion": "confirmar", "respuesta": f"Confirmo visita por '{contexto['motivo']}' en '{contexto['direccion']}', barrio {elegido['nombreBarrio']}. ¿Deseas agendarla?"}
+            return {"ok": True, "accion": "confirmar", "respuesta": f"Confirmo visita por '{contexto['motivo']}' en '{contexto['direccion']}', barrio {elegido['nombreBarrio']}. ¿Deseas agendarla?", "detalle": {}}
 
         # Confirmar
         if texto in ["sí", "si", "confirmar", "claro"]:
@@ -204,9 +191,9 @@ async def chat(mensaje: MensajeEntrada):
                 contexto["telefono"], barrio_id
             )
             conversaciones.pop(doc, None)
-            return {"ok": True, "accion": "visita_creada", "respuesta": "✅ Tu visita fue creada exitosamente."}
+            return {"ok": True, "accion": "visita_creada", "respuesta": "✅ Tu visita fue creada exitosamente. Gracias por confiar en Previmed.", "detalle": {"visita": visita}}
 
-        return {"ok": True, "accion": "esperando_confirmacion", "respuesta": "¿Deseas que cree la visita con esos datos?"}
+        return {"ok": True, "accion": "esperando_confirmacion", "respuesta": "¿Deseas que cree la visita con esos datos?", "detalle": {}}
 
     # ========= INFORMACIÓN =========
     completion = cliente_openai.chat.completions.create(
@@ -216,9 +203,13 @@ async def chat(mensaje: MensajeEntrada):
             {"role": "user", "content": mensaje.texto}
         ]
     )
-    return {"ok": True, "accion": "info", "respuesta": completion.choices[0].message.content}
+    return {"ok": True, "accion": "info", "respuesta": completion.choices[0].message.content, "detalle": {}}
 
 
 @app.get("/")
 def inicio():
     return {"status": "ok", "mensaje": "Asistente IA operativo"}
+
+@app.get("/health")
+def health():
+    return {"ok": True, "status": "running"}
