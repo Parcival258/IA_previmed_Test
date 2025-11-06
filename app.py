@@ -38,18 +38,22 @@ app.add_middleware(
 )
 print("🧩 CORS activo solo para: http://localhost:5173")
 
-# ===============================
 # 🧠 Memoria conversacional
-# ===============================
 conversaciones = {}
 
 # ===============================
 # 📥 Modelo de entrada
 # ===============================
+from typing import List, Optional
+
+class MensajeHistorial(BaseModel):
+    rol: str
+    texto: str
+
 class MensajeEntrada(BaseModel):
     texto: str
-    documento: str | None = None
-    historial: list[dict] | None = None
+    documento: Optional[str] = None
+    historial: Optional[List[MensajeHistorial]] = None
 
 
 # ===============================
