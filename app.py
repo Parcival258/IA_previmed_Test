@@ -106,23 +106,17 @@ async def crear_visita(paciente_id, medico_id, descripcion, direccion, telefono,
     try:
         async with httpx.AsyncClient(timeout=15) as cliente:
             payload = {
-                "fechaVisita": datetime.now().isoformat(),   # camelCase
+                "fecha_visita": datetime.now().isoformat(),
                 "descripcion": descripcion,
                 "direccion": direccion,
                 "telefono": telefono,
                 "estado": True,
-                "pacienteId": paciente_id,
-                "medicoId": medico_id,
-                "barrioId": barrio_id,
+                "paciente_id": paciente_id,
+                "medico_id": medico_id,
+                "barrio_id": barrio_id,
             }
-            print("📤 POST /visitas payload (final):", payload)
-
-            resp = await cliente.post(
-                f"{BACKEND_URL}/visitas",
-                json=payload,
-                headers={"Content-Type": "application/json"}
-            )
-
+            print("📤 POST /visitas payload:", payload)
+            resp = await cliente.post(f"{BACKEND_URL}/visitas", json=payload)
             status = resp.status_code
             text = await resp.aread()
             body_str = text.decode(errors="ignore")
@@ -135,11 +129,9 @@ async def crear_visita(paciente_id, medico_id, descripcion, direccion, telefono,
 
             ok = 200 <= status < 300
             return {"ok": ok, "status": status, "data": body}
-
     except Exception as e:
-        print("❌ Excepción creando visita:", repr(e))
-        return {"ok": False, "mensaje": f"Error creando visita: {repr(e)}"}
-
+        print("❌ Excepción creando visita:", e)
+        return {"ok": False, "mensaje": f"Error creando visita: {e}"}
 
 # =====================================================
 # CHAT PRINCIPAL
