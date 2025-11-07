@@ -7,7 +7,7 @@ import os, httpx, json, re
 from datetime import datetime
 from contexto import contexto_prevemed
 
-# Asegurar que los logs aparezcan en tiempo real en Render
+# Mostrar logs en tiempo real (Render)
 import sys
 sys.stdout.reconfigure(line_buffering=True)
 
@@ -26,11 +26,11 @@ app = FastAPI(title="Asistente IA Previmed")
 cliente_openai = OpenAI(api_key=CLAVE_OPENAI)
 
 # ===============================
-# 🔓 CORS (modo desarrollo y prod)
+# 🔓 CORS (libre para desarrollo)
 # ===============================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # durante desarrollo, libre
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -51,14 +51,13 @@ class MensajeEntrada(BaseModel):
     historial: list | None = None
 
 # ===============================
-# 🔍 Utilidades básicas para datos
+# 🔍 Utilidades para extraer datos
 # ===============================
 tel_regex = re.compile(r"(?<!\d)(\+?57)?\s*(3\d{9}|\d{7,10})(?!\d)")
 addr_regex = re.compile(r"\b(cra|cr|cra\.|carrera|cll|calle|av|avenida)\b|\b#\b", re.IGNORECASE)
 motivo_palabras = [
-    "dolor", "fiebre", "tos", "mareo", "náusea", "nausea", "vomito", "vómito",
-    "cansancio", "fractura", "golpe", "resfriado", "migraña", "diarrea", "presión",
-    "asma", "alergia", "infección"
+    "dolor", "fiebre", "tos", "mareo", "náusea", "vomito", "vómito", "fractura", "golpe",
+    "resfriado", "migraña", "diarrea", "presión", "asma", "alergia", "infección", "consulta", "revisión"
 ]
 
 def posible_telefono(texto):
@@ -74,7 +73,7 @@ def posible_direccion(texto):
 
 def posible_motivo(texto):
     t = texto.lower()
-    if any(p in t for p in motivo_palabras) or "me duele" in t or "consulta" in t:
+    if any(p in t for p in motivo_palabras) or "me duele" in t:
         return texto.strip()
     return None
 
@@ -138,7 +137,7 @@ async def crear_visita(paciente_id, medico_id, descripcion, direccion, telefono,
         return {"ok": False, "mensaje": f"Error creando visita: {e}"}
 
 # ===============================
-# 💬 Chat inteligente con memoria de estado
+# 💬 Chat inteligente
 # ===============================
 @app.post("/chat")
 async def chat(mensaje: MensajeEntrada):
@@ -158,7 +157,7 @@ async def chat(mensaje: MensajeEntrada):
         }
     estado = estado_usuario[doc]
 
-    # Detección automática previa
+    # Extracción automática
     t_low = texto.lower()
     if not estado["telefono"]:
         tel = posible_telefono(texto)
@@ -185,33 +184,39 @@ async def chat(mensaje: MensajeEntrada):
                 estado["barrio_id"] = b["idBarrio"]
                 estado["barrio_nombre"] = b["nombreBarrio"]
 
-    # Prompt reforzado
+    # Detectar campos faltantes
+    faltan = []
+    if not estado.get("paciente_id"): faltan.append("membresía")
+    if not estado.get("nombre"): faltan.append("nombre completo")
+    if not estado.get("telefono"): faltan.append("teléfono de contacto")
+    if not estado.get("direccion"): faltan.append("dirección")
+    if not estado.get("motivo"): faltan.append("motivo de la visita")
+    if not estado.get("barrio_id"): faltan.append("barrio")
+    if not estado.get("medico_id"): faltan.append("médico")
+
+    faltan_texto = ", ".join(faltan) if faltan else "ninguno"
     estado_json = json.dumps(estado, ensure_ascii=False)
+
+    # Prompt reforzado
     system_prompt = {
         "role": "system",
         "content": (
             "Eres el asistente institucional y médico de Previmed.\n"
-            "SIEMPRE responde en JSON **válido** con las claves: 'accion', 'respuesta' y opcionalmente 'detalle'.\n\n"
-            "Acciones permitidas:\n"
-            "- 'info': información general (usa el contexto institucional).\n"
-            "- 'verificar_membresia': validar membresía.\n"
-            "- 'listar_medicos': mostrar médicos activos.\n"
-            "- 'listar_barrios': mostrar barrios activos.\n"
-            "- 'pedir_dato': solicitar campos faltantes.\n"
-            "- 'confirmar_datos': confirmar antes de crear la visita.\n"
-            "- 'crear_visita': si ya están todos los campos (paciente_id, medico_id, barrio_id, telefono, direccion, motivo).\n\n"
-            "ESTADO ACTUAL:\n"
-            f"{estado_json}\n\n"
+            "Responde SIEMPRE en JSON con las claves: 'accion', 'respuesta' y 'detalle'.\n\n"
+            "Acciones posibles: info, verificar_membresia, listar_medicos, listar_barrios, pedir_dato, confirmar_datos, crear_visita.\n\n"
+            f"ESTADO ACTUAL:\n{estado_json}\n\n"
+            f"Campos faltantes detectados: {faltan_texto}\n\n"
             "REGLAS:\n"
-            "1) Tratar el ESTADO ACTUAL como verdad absoluta. Si un campo no está vacío, no lo pidas.\n"
-            "2) Si falta paciente_id, primero 'verificar_membresia'.\n"
-            "3) Si faltan algunos datos, usa 'pedir_dato' y en 'detalle' pon 'faltan': ['campo1','campo2'].\n"
-            "4) No reinicies conversación ni pidas datos repetidos.\n"
-            "5) 'crear_visita' solo si todos los campos requeridos están presentes.\n"
-            "6) Responde solo JSON puro, sin texto adicional.\n\n"
-            "Contexto institucional:\n"
-            f"{contexto_prevemed}\n"
-        )
+            "1️⃣ Usa el estado actual como verdad: no repitas datos ya completos.\n"
+            "2️⃣ Si faltan datos, responde con 'accion':'pedir_dato' e indica en 'detalle':{'faltan':[...]}.\n"
+            "3️⃣ Si hay varios campos faltantes, pregunta uno a la vez en orden lógico (teléfono → dirección → motivo → barrio → médico).\n"
+            "4️⃣ Si ya tienes todos los datos, responde con 'accion':'crear_visita'.\n"
+            "5️⃣ Si falta membresía, responde con 'accion':'verificar_membresia'.\n"
+            "6️⃣ Nunca digas solo 'proporcione los datos'; especifica siempre cuáles faltan.\n"
+            "7️⃣ Mantén un tono empático y conversacional.\n"
+            "8️⃣ Devuelve únicamente JSON puro (sin texto adicional).\n\n"
+            f"Contexto institucional:\n{contexto_prevemed}\n"
+        ),
     }
 
     mensajes = [system_prompt, *historial, {"role": "user", "content": texto}]
@@ -235,7 +240,7 @@ async def chat(mensaje: MensajeEntrada):
     respuesta_texto = data.get("respuesta", "¿En qué puedo ayudarte?")
     detalle = data.get("detalle", {}) if isinstance(data.get("detalle", {}), dict) else {}
 
-    # Ejecutar acciones solicitadas
+    # Ejecutar acciones reales
     try:
         if accion == "verificar_membresia":
             if not mensaje.documento:
@@ -268,14 +273,14 @@ async def chat(mensaje: MensajeEntrada):
                 detalle["barrios"] = nombres
                 respuesta_texto = "¿En qué barrio estás? " + ", ".join(nombres)
             else:
-                respuesta_texto = "No hay barrios activos en este momento."
+                respuesta_texto = "No hay barrios activos."
 
         elif accion == "crear_visita":
             oblig = ["paciente_id", "medico_id", "barrio_id", "telefono", "direccion", "motivo"]
-            faltan = [c for c in oblig if not estado.get(c)]
-            if faltan:
-                detalle["faltan"] = faltan
-                respuesta_texto = "Faltan datos para crear la visita: " + ", ".join(faltan)
+            faltantes = [c for c in oblig if not estado.get(c)]
+            if faltantes:
+                detalle["faltan"] = faltantes
+                respuesta_texto = "Faltan datos: " + ", ".join(faltantes)
             else:
                 visita = await crear_visita(
                     paciente_id=estado["paciente_id"],
@@ -297,16 +302,15 @@ async def chat(mensaje: MensajeEntrada):
         print("❌ Error ejecutando acción:", e)
         respuesta_texto = f"Error en acción '{accion}'."
 
-    # Guardar historial
     historial.append({"role": "user", "content": texto})
     historial.append({"role": "assistant", "content": respuesta_texto})
     conversaciones[doc] = historial[-10:]
 
-    print("🎯 IA ACCION:", accion, "| FALTAN:", detalle.get("faltan"))
+    print("🎯 Acción:", accion, "| Faltan:", detalle.get("faltan"))
     return {"ok": True, "accion": accion, "respuesta": respuesta_texto, "detalle": detalle}
 
 # ===============================
-# 🩺 Rutas de control
+# 🩺 Rutas básicas
 # ===============================
 @app.get("/")
 def root():
