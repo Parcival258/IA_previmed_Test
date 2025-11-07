@@ -7,27 +7,17 @@ import os, httpx, json, re
 from datetime import datetime
 from contexto import contexto_prevemed
 
-# Mostrar logs en tiempo real (Render)
 import sys
 sys.stdout.reconfigure(line_buffering=True)
 
 load_dotenv()
 
-# ===============================
-# 🔧 Variables de entorno
-# ===============================
 CLAVE_OPENAI = os.getenv("OPENAI_API_KEY")
 BACKEND_URL = os.getenv("BACKEND_URL", "https://previmedbackend-q73n.onrender.com")
 
-# ===============================
-# 🚀 Inicializar app
-# ===============================
 app = FastAPI(title="Asistente IA Previmed")
 cliente_openai = OpenAI(api_key=CLAVE_OPENAI)
 
-# ===============================
-# 🔓 CORS (libre para desarrollo)
-# ===============================
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -36,28 +26,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ===============================
-# 🧠 Memorias en servidor
-# ===============================
 conversaciones: dict[str, list] = {}
 estado_usuario: dict[str, dict] = {}
 
-# ===============================
-# 📥 Modelo de entrada
-# ===============================
 class MensajeEntrada(BaseModel):
     texto: str
     documento: str | None = None
     historial: list | None = None
 
-# ===============================
-# 🔍 Utilidades para extraer datos
-# ===============================
+# =====================================================
+# UTILIDADES
+# =====================================================
 tel_regex = re.compile(r"(?<!\d)(\+?57)?\s*(3\d{9}|\d{7,10})(?!\d)")
 addr_regex = re.compile(r"\b(cra|cr|cra\.|carrera|cll|calle|av|avenida)\b|\b#\b", re.IGNORECASE)
 motivo_palabras = [
-    "dolor", "fiebre", "tos", "mareo", "náusea", "vomito", "vómito", "fractura", "golpe",
-    "resfriado", "migraña", "diarrea", "presión", "asma", "alergia", "infección", "consulta", "revisión"
+    "dolor", "fiebre", "tos", "mareo", "náusea", "vomito", "vómito", "fractura",
+    "golpe", "resfriado", "migraña", "diarrea", "presión", "asma", "alergia",
+    "infección", "consulta", "revisión"
 ]
 
 def posible_telefono(texto):
@@ -83,9 +68,9 @@ def posible_nombre(texto):
         return limpio
     return None
 
-# ===============================
-# 🌐 Endpoints reales de backend
-# ===============================
+# =====================================================
+# ENDPOINTS REALES
+# =====================================================
 async def verificar_membresia_activa(documento: str):
     try:
         async with httpx.AsyncClient(timeout=10) as cliente:
@@ -116,9 +101,10 @@ async def get_barrios():
     except Exception as e:
         return {"ok": False, "mensaje": f"Error obteniendo barrios: {e}"}
 
+# ✅ Función corregida para crear visita
 async def crear_visita(paciente_id, medico_id, descripcion, direccion, telefono, barrio_id):
     try:
-        async with httpx.AsyncClient(timeout=10) as cliente:
+        async with httpx.AsyncClient(timeout=15) as cliente:
             payload = {
                 "fecha_visita": datetime.now().isoformat(),
                 "descripcion": descripcion,
@@ -131,14 +117,25 @@ async def crear_visita(paciente_id, medico_id, descripcion, direccion, telefono,
             }
             print("📤 POST /visitas payload:", payload)
             resp = await cliente.post(f"{BACKEND_URL}/visitas", json=payload)
-            resp.raise_for_status()
-            return {"ok": True, "data": resp.json()}
+            status = resp.status_code
+            text = await resp.aread()
+            body_str = text.decode(errors="ignore")
+            print(f"📥 /visitas status={status} body={body_str}")
+
+            try:
+                body = json.loads(body_str)
+            except Exception:
+                body = {"raw": body_str}
+
+            ok = 200 <= status < 300
+            return {"ok": ok, "status": status, "data": body}
     except Exception as e:
+        print("❌ Excepción creando visita:", e)
         return {"ok": False, "mensaje": f"Error creando visita: {e}"}
 
-# ===============================
-# 💬 Chat inteligente
-# ===============================
+# =====================================================
+# CHAT PRINCIPAL
+# =====================================================
 @app.post("/chat")
 async def chat(mensaje: MensajeEntrada):
     texto = mensaje.texto.strip()
@@ -157,7 +154,7 @@ async def chat(mensaje: MensajeEntrada):
         }
     estado = estado_usuario[doc]
 
-    # Extracción automática
+    # extracción automática
     t_low = texto.lower()
     if not estado["telefono"]:
         tel = posible_telefono(texto)
@@ -184,7 +181,7 @@ async def chat(mensaje: MensajeEntrada):
                 estado["barrio_id"] = b["idBarrio"]
                 estado["barrio_nombre"] = b["nombreBarrio"]
 
-    # Detectar campos faltantes
+    # campos faltantes
     faltan = []
     if not estado.get("paciente_id"): faltan.append("membresía")
     if not estado.get("nombre"): faltan.append("nombre completo")
@@ -240,7 +237,6 @@ async def chat(mensaje: MensajeEntrada):
     respuesta_texto = data.get("respuesta", "¿En qué puedo ayudarte?")
     detalle = data.get("detalle", {}) if isinstance(data.get("detalle", {}), dict) else {}
 
-    # Ejecutar acciones reales
     try:
         if accion == "verificar_membresia":
             if not mensaje.documento:
@@ -291,12 +287,20 @@ async def chat(mensaje: MensajeEntrada):
                     barrio_id=estado["barrio_id"]
                 )
                 detalle["visita"] = visita
+
                 if visita.get("ok"):
-                    respuesta_texto = "✅ Tu visita fue creada exitosamente. Gracias por confiar en Previmed."
+                    respuesta_texto = "✅ Tu visita fue creada exitosamente."
+                    visita_id = (visita.get("data") or {}).get("id") or (visita.get("data") or {}).get("msj") or ""
+                    if visita_id:
+                        respuesta_texto += f" Detalle: {visita_id}"
                     conversaciones.pop(doc, None)
                     estado_usuario.pop(doc, None)
                 else:
-                    respuesta_texto = "Ocurrió un problema creando la visita."
+                    status = visita.get("status")
+                    err_raw = (visita.get("data") or {}).get("raw")
+                    respuesta_texto = f"⚠️ No pude crear la visita (status {status}). Intenta de nuevo."
+                    if err_raw:
+                        respuesta_texto += " Detalle técnico en logs."
 
     except Exception as e:
         print("❌ Error ejecutando acción:", e)
@@ -309,9 +313,9 @@ async def chat(mensaje: MensajeEntrada):
     print("🎯 Acción:", accion, "| Faltan:", detalle.get("faltan"))
     return {"ok": True, "accion": accion, "respuesta": respuesta_texto, "detalle": detalle}
 
-# ===============================
-# 🩺 Rutas básicas
-# ===============================
+# =====================================================
+# ENDPOINTS DE CONTROL
+# =====================================================
 @app.get("/")
 def root():
     return {"status": "ok", "mensaje": "Asistente IA operativo"}
