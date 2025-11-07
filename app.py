@@ -255,12 +255,10 @@ async def chat(mensaje: MensajeEntrada):
 
                 if visita.get("ok") and visita.get("status") in [200, 201]:
                     data = visita.get("data") or {}
-                    msj = data.get("msj")
                     id_visita = None
-                    if isinstance(msj, list) and len(msj) > 0:
-                        id_visita = msj[0].get("idVisita")
-                    elif isinstance(msj, dict):
-                        id_visita = msj.get("idVisita")
+                    # ✅ Buscar idVisita dentro de data.data según estructura real
+                    if "data" in data and isinstance(data["data"], dict):
+                        id_visita = data["data"].get("idVisita")
 
                     if id_visita:
                         nombre_medico = estado.get("medico_nombre", "")
